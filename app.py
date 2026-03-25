@@ -47,11 +47,15 @@ def text_query_fn(query: str, top_k: int):
         return "请先运行 `python build_index.py` 构建图像索引！", [], ""
 
     pipeline = get_pipeline()
-    answer, retrieved = pipeline.query_by_text(query)
+    answer, retrieved = pipeline.query_by_text(
+        query,
+        top_k=top_k,
+        max_images=top_k,
+    )
 
     images_out = []
     captions_out = []
-    for item in retrieved[:top_k]:
+    for item in retrieved:
         img_path = item["image_path"]
         try:
             img = Image.open(img_path).convert("RGB")
@@ -77,11 +81,16 @@ def image_query_fn(image: Optional[Image.Image], question: str, top_k: int):
         question = "请描述图像中的主要内容。"
 
     pipeline = get_pipeline()
-    answer, retrieved = pipeline.query_by_image(image, question)
+    answer, retrieved = pipeline.query_by_image(
+        image,
+        question,
+        top_k=top_k,
+        max_images=top_k,
+    )
 
     images_out = []
     captions_out = []
-    for item in retrieved[:top_k]:
+    for item in retrieved:
         img_path = item["image_path"]
         try:
             img = Image.open(img_path).convert("RGB")
@@ -181,7 +190,7 @@ with gr.Blocks(
 
 if __name__ == "__main__":
     demo.launch(
-        server_name="0.0.0.0",
+        server_name="127.0.0.1",
         server_port=7860,
         share=False,
         show_error=True,
