@@ -11,12 +11,14 @@ build_index.py
 
 import json
 import os
+import shutil
 import sys
 import urllib.request
-from pathlib import Path
+import zipfile
 
 import numpy as np
 import yaml
+from tqdm import tqdm
 
 from src.encoder import CLIPEncoder
 from src.retriever import FAISSRetriever
@@ -35,6 +37,27 @@ SAMPLE_IMAGES_LIST_URL = (
 )
 
 
+def _load_filenames_from_coco_annotations(max_images: int) -> list:
+    ann_dir = os.path.join("data", "annotations")
+    os.makedirs(ann_dir, exist_ok=True)
+    ann_file = os.path.join(ann_dir, "captions_val2017.json")
+    if not os.path.exists(ann_file):
+        zip_path = os.path.join(ann_dir, "annotations_trainval2017.zip")
+        print("[Build] 正在下载 COCO annotations（用于获取稳定文件名列表）...")
+        urllib.request.urlretrieve(COCO_ANNOTATIONS_URL, zip_path)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extract("annotations/captions_val2017.json", path=ann_dir)
+        extracted = os.path.join(ann_dir, "annotations", "captions_val2017.json")
+        os.replace(extracted, ann_file)
+        shutil.rmtree(os.path.join(ann_dir, "annotations"), ignore_errors=True)
+        if os.path.exists(zip_path):
+            os.remove(zip_path)
+    with open(ann_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    filenames = [img["file_name"] for img in data["images"][:max_images]]
+    return filenames
+
+
 def download_sample_images(images_dir: str, max_images: int = 500) -> list:
     """
     从 COCO 下载 max_images 张样例图像到 images_dir。
@@ -49,20 +72,27 @@ def download_sample_images(images_dir: str, max_images: int = 500) -> list:
     print(f"[Build] 正在从 COCO 下载 {max_images} 张样例图像...")
     base_url = "http://images.cocodataset.org/val2017/"
 
-    # COCO val2017 文件名为 12 位补零的数字
-    # 取前 500 个 id（实际 id 范围参考 COCO API）
-    # 这里使用硬编码的前 500 张（已知存在）
     try:
-        # 尝试获取文件名列表
         with urllib.request.urlopen(SAMPLE_IMAGES_LIST_URL, timeout=10) as resp:
             lines = resp.read().decode().strip().split("\n")
-        filenames = [l.strip() + ".jpg" for l in lines[:max_images] if l.strip()]
+        filenames = []
+        for line in lines:
+            value = line.strip()
+            if not value:
+                continue
+            fname = os.path.basename(value)
+            if not fname.lower().endswith(".jpg"):
+                fname = f"{fname}.jpg"
+            filenames.append(fname)
+            if len(filenames) >= max_images:
+                break
     except Exception:
-        # 降级：使用 000000000139.jpg 开始的连续编号
-        filenames = [f"{i:012d}.jpg" for i in range(139, 139 + max_images)]
+        print("[Build] 远端文件名列表不可用，切换为 COCO annotations 文件名列表...")
+        filenames = _load_filenames_from_coco_annotations(max_images)
 
     downloaded = []
-    for fname in filenames:
+    failed = 0
+    for fname in tqdm(filenames, desc="下载图像", unit="img"):
         save_path = os.path.join(images_dir, fname)
         if os.path.exists(save_path):
             downloaded.append(save_path)
@@ -71,12 +101,11 @@ def download_sample_images(images_dir: str, max_images: int = 500) -> list:
         try:
             urllib.request.urlretrieve(url, save_path)
             downloaded.append(save_path)
-            if len(downloaded) % 50 == 0:
-                print(f"  已下载 {len(downloaded)}/{max_images}")
-        except Exception as e:
-            pass  # 跳过无法下载的图像
+        except Exception:
+            failed += 1
+            continue
 
-    print(f"[Build] 下载完成，共 {len(downloaded)} 张图像")
+    print(f"[Build] 下载完成，共 {len(downloaded)} 张图像，失败 {failed} 张")
     return downloaded
 
 
