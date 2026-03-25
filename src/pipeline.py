@@ -7,9 +7,6 @@ Encode Query → Retrieve Images → Generate Answer
 """
 
 from typing import List, Dict, Optional, Tuple
-from pathlib import Path
-
-import numpy as np
 import yaml
 from PIL import Image
 
@@ -52,21 +49,36 @@ class MultimodalRAGPipeline:
         )
         self.top_k = ret_cfg["top_k"]
 
-    def query_by_text(self, text: str) -> Tuple[str, List[Dict]]:
+    def query_by_text(
+        self,
+        text: str,
+        top_k: Optional[int] = None,
+        max_images: Optional[int] = None,
+    ) -> Tuple[str, List[Dict]]:
         """
         文本问答主入口。
         返回: (answer, retrieved_items)
         """
+        effective_top_k = top_k if top_k is not None else self.top_k
+        effective_max_images = max_images if max_images is not None else effective_top_k
         query_vec = self.encoder.encode_text(text)
-        retrieved = self.retriever.search(query_vec, top_k=self.top_k)
-        answer = self.generator.generate(text, retrieved)
+        retrieved = self.retriever.search(query_vec, top_k=effective_top_k)
+        answer = self.generator.generate(text, retrieved, max_images=effective_max_images)
         return answer, retrieved
 
-    def query_by_image(self, image: Image.Image, question: str = "请描述这张图像的内容。") -> Tuple[str, List[Dict]]:
+    def query_by_image(
+        self,
+        image: Image.Image,
+        question: str = "请描述这张图像的内容。",
+        top_k: Optional[int] = None,
+        max_images: Optional[int] = None,
+    ) -> Tuple[str, List[Dict]]:
         """
         以图搜图 + 问答：先用图像检索相似图，再用 LLM 回答。
         """
+        effective_top_k = top_k if top_k is not None else self.top_k
+        effective_max_images = max_images if max_images is not None else effective_top_k
         query_vec = self.encoder.encode_image_single(image)
-        retrieved = self.retriever.search(query_vec, top_k=self.top_k)
-        answer = self.generator.generate(question, retrieved)
+        retrieved = self.retriever.search(query_vec, top_k=effective_top_k)
+        answer = self.generator.generate(question, retrieved, max_images=effective_max_images)
         return answer, retrieved

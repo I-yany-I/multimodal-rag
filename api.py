@@ -17,8 +17,7 @@ from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from PIL import Image
 
 app = FastAPI(
@@ -50,13 +49,15 @@ def get_pipeline():
 
 class TextQueryRequest(BaseModel):
     query: str
-    top_k: int = 5
+    top_k: int = Field(default=5, ge=1, le=10)
+    include_base64: bool = False
 
     class Config:
         json_schema_extra = {
             "example": {
                 "query": "一只猫坐在沙发上",
-                "top_k": 3
+                "top_k": 3,
+                "include_base64": False
             }
         }
 
@@ -142,8 +143,11 @@ def query_by_text(request: TextQueryRequest):
     t0 = time.time()
     try:
         pipeline = get_pipeline()
-        answer, retrieved = pipeline.query_by_text(request.query)
-        retrieved = retrieved[:request.top_k]
+        answer, retrieved = pipeline.query_by_text(
+            request.query,
+            top_k=request.top_k,
+            max_images=request.top_k,
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -151,7 +155,7 @@ def query_by_text(request: TextQueryRequest):
     return QueryResponse(
         query=request.query,
         answer=answer,
-        retrieved_images=format_retrieved(retrieved, include_base64=True),
+        retrieved_images=format_retrieved(retrieved, include_base64=request.include_base64),
         latency_ms=round(latency_ms, 1),
     )
 
@@ -161,12 +165,15 @@ def query_by_image(
     file: UploadFile = File(..., description="上传查询图像（jpg/png）"),
     question: str = Form(default="请描述图像中的主要内容。", description="关于图像的问题"),
     top_k: int = Form(default=3, description="检索图像数量"),
+    include_base64: bool = Form(default=False, description="是否返回 base64 图像"),
 ):
     """
     上传图像，检索相似图像并回答问题。
     """
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="请上传图像文件")
+    if not (1 <= top_k <= 10):
+        raise HTTPException(status_code=400, detail="top_k 必须在 1 到 10 之间")
 
     try:
         image_bytes = file.file.read()
@@ -177,8 +184,12 @@ def query_by_image(
     t0 = time.time()
     try:
         pipeline = get_pipeline()
-        answer, retrieved = pipeline.query_by_image(image, question)
-        retrieved = retrieved[:top_k]
+        answer, retrieved = pipeline.query_by_image(
+            image,
+            question,
+            top_k=top_k,
+            max_images=top_k,
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
 
@@ -186,7 +197,7 @@ def query_by_image(
     return QueryResponse(
         query=question,
         answer=answer,
-        retrieved_images=format_retrieved(retrieved, include_base64=True),
+        retrieved_images=format_retrieved(retrieved, include_base64=include_base64),
         latency_ms=round(latency_ms, 1),
     )
 
@@ -205,7 +216,7 @@ def stats():
     retriever.load(ret_cfg["index_path"], ret_cfg["metadata_path"])
     return {
         "total_images": retriever.index.ntotal,
-        "vector_dim": retriever.dim,
+        "vector_dim": retriever.index.d,
         "index_path": ret_cfg["index_path"],
         "has_captions": sum(1 for m in retriever.metadata if m.get("caption")),
     }
