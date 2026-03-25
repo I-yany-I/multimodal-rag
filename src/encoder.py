@@ -32,6 +32,34 @@ class CLIPEncoder:
         self.processor = CLIPProcessor.from_pretrained(model_name)
         self.model.eval()
 
+    def _to_clip_embedding(self, output, modality: str) -> torch.Tensor:
+        if isinstance(output, torch.Tensor):
+            return output
+        if modality == "image":
+            image_embeds = getattr(output, "image_embeds", None)
+            if image_embeds is not None:
+                return image_embeds
+        if modality == "text":
+            text_embeds = getattr(output, "text_embeds", None)
+            if text_embeds is not None:
+                return text_embeds
+        pooled = getattr(output, "pooler_output", None)
+        if pooled is None:
+            pooled = getattr(output, "last_hidden_state", None)
+            if pooled is None:
+                raise TypeError(f"CLIP 输出类型不支持: {type(output)}")
+            pooled = pooled[:, 0, :]
+        proj = None
+        if modality == "image":
+            proj = getattr(self.model, "visual_projection", None)
+        if modality == "text":
+            proj = getattr(self.model, "text_projection", None)
+        if proj is not None:
+            in_features = getattr(proj, "in_features", None)
+            if in_features is None or pooled.shape[-1] == in_features:
+                return proj(pooled)
+        return pooled
+
     @torch.no_grad()
     def encode_images(self, image_paths: List[str], batch_size: int = 64) -> np.ndarray:
         """
@@ -50,7 +78,7 @@ class CLIPEncoder:
                     print(f"[Encoder] 跳过损坏图像 {p}: {e}")
                     images.append(Image.new("RGB", (224, 224)))  # 占位
             inputs = self.processor(images=images, return_tensors="pt", padding=True).to(self.device)
-            feats = self.model.get_image_features(**inputs)
+            feats = self._to_clip_embedding(self.model.get_image_features(**inputs), modality="image")
             feats = feats / feats.norm(dim=-1, keepdim=True)   # L2 归一化
             all_embeddings.append(feats.cpu().float().numpy())
         return np.vstack(all_embeddings)
@@ -61,7 +89,7 @@ class CLIPEncoder:
         编码单条文本 query，返回 shape=(1, 512) 的 float32 归一化向量。
         """
         inputs = self.processor(text=[text], return_tensors="pt", padding=True).to(self.device)
-        feats = self.model.get_text_features(**inputs)
+        feats = self._to_clip_embedding(self.model.get_text_features(**inputs), modality="text")
         feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats.cpu().float().numpy()
 
@@ -71,6 +99,6 @@ class CLIPEncoder:
         编码单张 PIL 图像，用于以图搜图场景。
         """
         inputs = self.processor(images=[image], return_tensors="pt").to(self.device)
-        feats = self.model.get_image_features(**inputs)
+        feats = self._to_clip_embedding(self.model.get_image_features(**inputs), modality="image")
         feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats.cpu().float().numpy()
