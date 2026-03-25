@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Environments
+.env
+.venv
+env/
+venv/
+
+# Data & models (large files)
+data/images/
+data/*.zip
+*.faiss
+*.index
+models/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs & checkpoints
+*.log
+runs/
+wandb/
+
+# OS
+.DS_Store
+Thumbs.db

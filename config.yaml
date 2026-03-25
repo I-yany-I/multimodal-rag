@@ -1,0 +1,22 @@
+clip:
+  model_name: "openai/clip-vit-base-patch32"
+  device: "cuda"               # cuda / cpu
+  batch_size: 64
+  image_size: 224
+
+generator:
+  model_name: "Qwen/Qwen2-VL-2B-Instruct"
+  device: "cuda"
+  load_in_4bit: true           # 4bit量化，节省显存
+  max_new_tokens: 256
+  temperature: 0.7
+
+retrieval:
+  top_k: 5                     # 召回图像数量
+  index_path: "data/faiss.index"
+  metadata_path: "data/metadata.json"
+
+data:
+  images_dir: "data/images"
+  # 使用COCO 2017 val 子集 (500张演示用)
+  max_images: 500
