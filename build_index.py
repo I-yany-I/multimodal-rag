@@ -2,7 +2,7 @@
 build_index.py
 --------------
 离线建库脚本：
-1. 自动下载 COCO 2017 val 子集（500 张演示用）
+1. 自动下载 COCO 2017 val 子集（5000 张演示用）
 2. 用 CLIP 批量编码所有图像
 3. 构建 FAISS 索引并持久化到 data/ 目录
 
@@ -10,6 +10,7 @@ build_index.py
 """
 
 import json
+import argparse
 import os
 import shutil
 import sys
@@ -20,7 +21,7 @@ import numpy as np
 import yaml
 from tqdm import tqdm
 
-from src.encoder import CLIPEncoder
+from src.encoder import make_encoder
 from src.retriever import FAISSRetriever
 from src.utils import collect_image_paths, load_coco_captions
 
@@ -31,7 +32,7 @@ COCO_VAL_IMAGES_URL = "http://images.cocodataset.org/zips/val2017.zip"
 COCO_ANNOTATIONS_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
 
 # 使用一批固定的 COCO val2017 图像 URL（避免下载整个 5GB zip）
-# 这里提供一个轻量替代方案：下载 COCO val2017 前 500 张图像的文件名列表
+# 这里提供一个轻量替代方案：下载 COCO val2017 前 5000 张图像的文件名列表
 SAMPLE_IMAGES_LIST_URL = (
     "https://raw.githubusercontent.com/nightrome/cocostuff/master/dataset/imageLists/val2017.txt"
 )
@@ -58,7 +59,7 @@ def _load_filenames_from_coco_annotations(max_images: int) -> list:
     return filenames
 
 
-def download_sample_images(images_dir: str, max_images: int = 500) -> list:
+def download_sample_images(images_dir: str, max_images: int = 5000) -> list:
     """
     从 COCO 下载 max_images 张样例图像到 images_dir。
     若网络不可用，跳过并使用本地已有图像。
@@ -126,12 +127,16 @@ def build_metadata(image_paths: list, captions: dict = None) -> list:
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--max_images", type=int, default=None)
+    args = parser.parse_args()
+
     config_path = "config.yaml"
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
     images_dir = cfg["data"]["images_dir"]
-    max_images = cfg["data"]["max_images"]
+    max_images = args.max_images if args.max_images is not None else cfg["data"]["max_images"]
     index_path = cfg["retrieval"]["index_path"]
     metadata_path = cfg["retrieval"]["metadata_path"]
 
@@ -158,19 +163,26 @@ def main():
     print("\n" + "=" * 50)
     print("阶段 2/3：CLIP 图像编码")
     print("=" * 50)
-    encoder = CLIPEncoder(
-        model_name=cfg["clip"]["model_name"],
-        device=cfg["clip"]["device"],
-    )
+    encoder = make_encoder(cfg["clip"])
     embeddings = encoder.encode_images(image_paths, batch_size=cfg["clip"]["batch_size"])
     print(f"[Build] 编码完成，向量矩阵形状: {embeddings.shape}")
+
+    manifest_path = os.path.join(os.path.dirname(index_path) or ".", "index_manifest.json")
+    manifest = {
+        "model_name": cfg["clip"]["model_name"],
+        "embedding_dim": int(embeddings.shape[1]),
+        "encoder_family": cfg["clip"].get("encoder_family", "clip"),
+    }
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    print(f"[Build] 已写入索引清单 -> {manifest_path}（评测前将核对与 config 一致）")
 
     # 3. 构建 FAISS 索引
     print("\n" + "=" * 50)
     print("阶段 3/3：构建 FAISS 索引")
     print("=" * 50)
     os.makedirs(os.path.dirname(index_path), exist_ok=True)
-    retriever = FAISSRetriever(dim=embeddings.shape[1])
+    retriever = FAISSRetriever()
     retriever.build(embeddings, metadata)
     retriever.save(index_path, metadata_path)
 

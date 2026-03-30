@@ -47,9 +47,11 @@ python build_index.py
 ```
 
 脚本会自动：
-- 从 COCO 2017 val 下载 500 张样例图像
+- 从 COCO 2017 val 下载 5000 张样例图像
 - 用 CLIP 批量编码为 512 维向量
 - 构建 FAISS 索引并保存到 `data/`
+
+可在 `config.yaml` 的 `data.max_images` 调整下载数量，或运行 `python build_index.py --max_images 5000` 覆盖配置。
 
 ### 3. 启动 Gradio 演示
 

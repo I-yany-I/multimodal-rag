@@ -9,7 +9,7 @@ FAISS (Facebook AI Similarity Search) 支持高效的近似最近邻搜索，
 import json
 import os
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 
 import faiss
 import numpy as np
@@ -24,7 +24,7 @@ class FAISSRetriever:
     - search():   输入查询向量，返回 top-k 图像元数据
     """
 
-    def __init__(self, dim: int = 512):
+    def __init__(self, dim: Optional[int] = None):
         self.dim = dim
         self.index = None
         self.metadata: List[Dict] = []  # 与向量一一对应的图像元数据
@@ -36,9 +36,10 @@ class FAISSRetriever:
         """
         assert embeddings.shape[0] == len(metadata), "向量数量与元数据数量不匹配"
         self.metadata = metadata
+        self.dim = int(embeddings.shape[1])  # 以数据为单一事实来源
         self.index = faiss.IndexFlatIP(self.dim)
         self.index.add(embeddings.astype(np.float32))
-        print(f"[Retriever] 索引构建完成，共 {self.index.ntotal} 条向量")
+        print(f"[Retriever] 索引构建完成，共 {self.index.ntotal} 条向量，维度 {self.dim}")
 
     def save(self, index_path: str, metadata_path: str) -> None:
         """持久化索引和元数据。"""
@@ -52,9 +53,10 @@ class FAISSRetriever:
     def load(self, index_path: str, metadata_path: str) -> None:
         """从磁盘加载已构建的索引。"""
         self.index = faiss.read_index(index_path)
+        self.dim = int(self.index.d)  # 从索引回写真实维度
         with open(metadata_path, "r", encoding="utf-8") as f:
             self.metadata = json.load(f)
-        print(f"[Retriever] 已加载索引，共 {self.index.ntotal} 条向量")
+        print(f"[Retriever] 已加载索引，共 {self.index.ntotal} 条向量，维度 {self.dim}")
 
     def search(self, query_vec: np.ndarray, top_k: int = 5) -> List[Dict]:
         """
@@ -66,6 +68,13 @@ class FAISSRetriever:
         query_vec = query_vec.astype(np.float32)
         if query_vec.ndim == 1:
             query_vec = query_vec[np.newaxis, :]
+            
+        if query_vec.shape[1] != self.index.d:
+            raise ValueError(
+                f"查询向量维度 {query_vec.shape[1]} 与索引维度 {self.index.d} 不一致。"
+                "请检查编码器与索引是否匹配，必要时重建索引。"
+            )
+            
         scores, indices = self.index.search(query_vec, top_k)
         results = []
         for score, idx in zip(scores[0], indices[0]):

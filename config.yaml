@@ -1,22 +1,33 @@
 clip:
-  model_name: "openai/clip-vit-base-patch32"
+  # ViT-L/14 检索召回通常明显优于 ViT-B/32；更换后需重新运行 build_index.py
+  # encoder_family: clip | siglip  （SigLIP 需整库重建索引，见 evaluate 对比）
+  encoder_family: "clip"
+  model_name: "openai/clip-vit-large-patch14"
   device: "cuda"               # cuda / cpu
-  batch_size: 64
+  batch_size: 32
   image_size: 224
 
 generator:
   model_name: "Qwen/Qwen2-VL-2B-Instruct"
   device: "cuda"
   load_in_4bit: true           # 4bit量化，节省显存
-  max_new_tokens: 256
-  temperature: 0.7
+  max_new_tokens: 384
+  temperature: 0.35            # 略低以更贴检索内容、减少编造
+  top_p: 0.9
 
 retrieval:
-  top_k: 5                     # 召回图像数量
+  top_k: 5                     # 送入 LLM 的最终张数
+  candidate_k: 20              # FAISS 先取更多，再经重排截断，减轻“看起来像但不相关”
+  rerank: true
+  # caption 自检索可略提高文本项权重（略降本值）；网格见 evaluate.py --grid-rerank-weights
+  rerank_visual_weight: 0.55
+  min_score: 0.18              # 综合分过低则不喂给模型（无量纲，约等于 cosine 量级）
+  query_rewrite: true          # 先将中文问题改写为英文检索短语，再与原问题做双路召回
+  rewrite_chinese_only: true
   index_path: "data/faiss.index"
   metadata_path: "data/metadata.json"
 
 data:
   images_dir: "data/images"
-  # 使用COCO 2017 val 子集 (500张演示用)
-  max_images: 500
+  # 使用COCO 2017 val 子集 (5000张演示用)
+  max_images: 5000

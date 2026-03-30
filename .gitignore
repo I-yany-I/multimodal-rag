@@ -33,3 +33,6 @@ wandb/
 # OS
 .DS_Store
 Thumbs.db
+
+# Personal notes (not for repo)
+面试模拟_多模态RAG_QA.md

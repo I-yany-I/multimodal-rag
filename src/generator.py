@@ -5,8 +5,7 @@ generator.py
 Qwen2-VL 支持多图输入，可同时理解多张检索图像并综合回答用户问题。
 """
 
-from typing import List, Dict
-from pathlib import Path
+from typing import List, Dict, Optional
 
 import torch
 from PIL import Image
@@ -26,12 +25,15 @@ class Qwen2VLGenerator:
         model_name: str = "Qwen/Qwen2-VL-2B-Instruct",
         device: str = "cuda",
         load_in_4bit: bool = True,
-        max_new_tokens: int = 256,
-        temperature: float = 0.7,
+        max_new_tokens: int = 384,
+        temperature: float = 0.35,
+        top_p: float = 0.9,
     ):
         self.device = device if torch.cuda.is_available() else "cpu"
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
+        self.top_p = top_p
+        self._rewrite_cache: Dict[str, str] = {}
 
         print(f"[Generator] 加载 Qwen2-VL: {model_name}  4bit={load_in_4bit}")
 
@@ -54,12 +56,97 @@ class Qwen2VLGenerator:
         self.model.eval()
         print("[Generator] 模型加载完成")
 
+    def _generate_from_messages(
+        self,
+        messages: List[Dict],
+        images: Optional[List[Image.Image]] = None,
+        max_new_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+    ) -> str:
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
+        processor_kwargs = {
+            "text": [text],
+            "return_tensors": "pt",
+        }
+        if images:
+            processor_kwargs["images"] = images
+
+        inputs = self.processor(**processor_kwargs)
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+
+        gen_kwargs = {
+            "max_new_tokens": max_new_tokens or self.max_new_tokens,
+            "pad_token_id": self.processor.tokenizer.eos_token_id,
+        }
+        effective_temperature = self.temperature if temperature is None else temperature
+        effective_top_p = self.top_p if top_p is None else top_p
+        if effective_temperature and effective_temperature > 0:
+            gen_kwargs["temperature"] = effective_temperature
+            gen_kwargs["top_p"] = effective_top_p
+            gen_kwargs["do_sample"] = True
+        else:
+            gen_kwargs["do_sample"] = False
+
+        with torch.no_grad():
+            output_ids = self.model.generate(**inputs, **gen_kwargs)
+
+        input_len = inputs["input_ids"].shape[1]
+        new_tokens = output_ids[0][input_len:]
+        answer = self.processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
+        return answer.strip()
+
+    @staticmethod
+    def _contains_cjk(text: str) -> bool:
+        return any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
+    def rewrite_query_for_retrieval(self, query: str, chinese_only: bool = True) -> str:
+        """
+        将自然语言问题改写为适合 CLIP 检索的英文短语。
+        主要用于中文 query 对英文图文空间检索效果不足的场景。
+        """
+        normalized = " ".join(query.strip().split())
+        if not normalized:
+            return ""
+        if chinese_only and not self._contains_cjk(normalized):
+            return normalized
+        if normalized in self._rewrite_cache:
+            return self._rewrite_cache[normalized]
+
+        rewrite_prompt = (
+            "Rewrite the user query into a short English phrase for image retrieval.\n"
+            "Keep only the key visual entities, actions, scene, and attributes.\n"
+            "Output one English line only, no explanation, no quotes, 4 to 14 words.\n\n"
+            f"User query: {normalized}"
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": rewrite_prompt}],
+            }
+        ]
+        rewritten = self._generate_from_messages(
+            messages,
+            images=None,
+            max_new_tokens=32,
+            temperature=0.0,
+        )
+        rewritten = " ".join(
+            rewritten.replace('"', " ").replace("'", " ").splitlines()[0].split()
+        ).strip()
+        if not rewritten:
+            rewritten = normalized
+        self._rewrite_cache[normalized] = rewritten
+        return rewritten
+
     def generate(self, query: str, retrieved_items: List[Dict], max_images: int = 3) -> str:
         """
         基于检索结果生成回答。
-        构造多模态 prompt: [图像1][图像2]... + 用户问题
+        构造多模态 prompt: [图像1][图像2]... + 检索说明 + 用户问题
         """
-        # 加载检索图像（最多 max_images 张）
         images = []
         valid_items = []
         for item in retrieved_items[:max_images]:
@@ -74,42 +161,38 @@ class Qwen2VLGenerator:
         if not images:
             return "抱歉，未能找到相关图像，无法回答该问题。"
 
-        # 构造消息格式（Qwen2-VL chat template）
+        evidence_lines = []
+        for i, it in enumerate(valid_items, start=1):
+            cap = (it.get("caption") or "").strip()
+            sc = it.get("score")
+            sc_s = f"{sc:.3f}" if isinstance(sc, (int, float)) else "—"
+            fname = it.get("filename", "")
+            if cap:
+                evidence_lines.append(
+                    f"- 图{i} ({fname})，检索相关度约 {sc_s}；数据集标注摘要：{cap}"
+                )
+            else:
+                evidence_lines.append(f"- 图{i} ({fname})，检索相关度约 {sc_s}。")
+        evidence_block = "\n".join(evidence_lines)
+
+        instruction = (
+            "你是多模态 RAG 助手。上方多张图来自向量检索，可能与用户问题只有部分相关。\n"
+            "请优先依据图像中的可见内容作答；可结合「数据集标注摘要」作补充，但若与图像明显矛盾则以图像为准。\n"
+            "若检索图不足以支持结论，请明确说明依据不足，不要编造细节。\n"
+            "如果多张图之间信息不一致，请优先回答它们的共同点，再补充说明不确定之处。\n"
+            "回答用中文，先给简短结论，再给1到2句依据，不要空泛复述问题。"
+        )
+
+        user_text = (
+            f"{instruction}\n\n"
+            f"【检索证据】\n{evidence_block}\n\n"
+            f"【用户问题】\n{query.strip()}"
+        )
+
         content = []
-        for i, img in enumerate(images):
+        for img in images:
             content.append({"type": "image", "image": img})
-        content.append({
-            "type": "text",
-            "text": (
-                f"你是一个图像问答助手。我为你提供了 {len(images)} 张与问题相关的图像，"
-                f"请根据这些图像内容回答用户的问题。\n\n"
-                f"用户问题：{query}"
-            )
-        })
+        content.append({"type": "text", "text": user_text})
 
         messages = [{"role": "user", "content": content}]
-        text = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-
-        inputs = self.processor(
-            text=[text],
-            images=images,
-            return_tensors="pt",
-        )
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
-
-        with torch.no_grad():
-            output_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=self.max_new_tokens,
-                temperature=self.temperature,
-                do_sample=self.temperature > 0,
-                pad_token_id=self.processor.tokenizer.eos_token_id,
-            )
-
-        # 只取新生成的部分（去掉 prompt）
-        input_len = inputs["input_ids"].shape[1]
-        new_tokens = output_ids[0][input_len:]
-        answer = self.processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
-        return answer.strip()
+        return self._generate_from_messages(messages, images=images)
