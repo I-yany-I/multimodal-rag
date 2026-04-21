@@ -91,23 +91,11 @@ python build_personal_index.py
 2. **强烈建议**安装 [ffmpeg](https://ffmpeg.org/download.html) 并加入系统 `PATH`，以支持常见音频容器（如浏览器录制的 webm/mp3）。  
 3. 可在 `config.yaml` 的 `speech` 段调整 **`model_size`**（`tiny`/`base`/`small`…）与 **`device`**；与 Qwen2-VL 同卡时若显存紧张请改用 **`tiny` 或 `base`**。  
 4. **Gradio**：打开 **「语音问答」** Tab，录制或上传音频后点击识别。  
-5. **API**：`POST /query/voice`，`multipart/form-data` 上传 `file`（音频），可选 `supplement`、`top_k`、`library`。
+5. **API**：`POST /query/voice`，`multipart/form-data` 上传 `file`（音频），可选 `supplement`、`top_k`、`library`。JSON 响应除 `transcript` 外含 **`asr_detected_language`**、**`asr_language_probability`**、**`asr_segments`**（起止秒与文本，由 `speech.return_timestamps` 控制）。
 
 语音链路：**音频 → ASR 文本 → 与文本问答相同的 CLIP 检索与 Qwen2-VL 生成**（不在此仓库训练语音模型）。
 
-## 文档索引
-
-- [多模态输入与语音链路（VLM 实际吃什么）](docs/多模态输入与语音链路.md)
-- [上线部署指南（Docker / 云主机 / HF Spaces）](docs/部署指南.md)
-
-## 演示用个人图库占位图（合规网络下载）
-
-没有真机照片时，可用 **Lorem Picsum 固定 ID** 占位图（非真实隐私生活照）：
-
-```bash
-python scripts/seed_demo_personal_images.py
-python build_personal_index.py
-```
+**为何不单独上「音频塔」**：图像库在 CLIP 视觉–文本空间；通用音频塔与图像向量**不在同一对齐空间**，强行融合会引入额外训练/伪对齐与评测成本。简历上更稳妥的故事是：**可解释 ASR**（`speech.return_timestamps` 输出分段与检测语种）+ **同一套图文 RAG**；若未来要做「以声搜图」再评估 **CLAP 类模型 + 独立音频索引** 的增量方案。
 
 ## 功能演示
 
@@ -200,10 +188,6 @@ multimodal-rag/
 ├── build_index.py           # COCO 演示离线建库
 ├── build_personal_index.py  # 个人图库离线建库
 ├── evaluate.py         # 检索评估脚本
-├── scripts/            # 辅助脚本（如演示占位图）
-├── docs/               # 设计与部署说明
-├── Dockerfile
-├── docker-compose.yml
 ├── config.yaml         # 配置文件
 └── requirements.txt
 ```

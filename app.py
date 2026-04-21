@@ -151,23 +151,25 @@ def voice_query_fn(
         return "", "请先录制或上传一段音频。", [], ""
 
     try:
-        from src.speech_asr import transcribe_file
+        from src.speech_asr import format_transcription_display, transcribe_file_with_meta
 
-        transcript = transcribe_file(str(audio_path), config_path="config.yaml")
+        meta = transcribe_file_with_meta(str(audio_path), config_path="config.yaml")
+        transcript = (meta.get("text") or "").strip()
+        display = format_transcription_display(meta, config_path="config.yaml")
     except RuntimeError as e:
         return "", f"语音识别不可用：{e}", [], ""
     except Exception as e:
         return "", f"语音识别失败（可检查 ffmpeg 是否已安装）：{e}", [], ""
 
-    if not (transcript or "").strip():
+    if not transcript:
         return "", "未识别到有效语音内容，请重试或检查麦克风/音量。", [], ""
 
-    query = transcript.strip()
+    query = transcript
     if supplement and supplement.strip():
         query = f"{query}。补充说明：{supplement.strip()}"
 
     answer, images_out, retrieved_text = _run_text_query(query, top_k, library)
-    return transcript, answer, images_out, retrieved_text
+    return display, answer, images_out, retrieved_text
 
 
 # ---------- Gradio UI ----------
@@ -420,8 +422,8 @@ with gr.Blocks(
             with gr.Column(scale=7, min_width=320):
                 with gr.Group():
                     voice_transcript = gr.Textbox(
-                        label="识别文本",
-                        lines=3,
+                        label="识别结果（检测语种 · 全文 · 分段时间轴）",
+                        lines=10,
                         interactive=False,
                     )
                     voice_answer = gr.Textbox(

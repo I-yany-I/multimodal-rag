@@ -13,7 +13,7 @@ import base64
 import io
 import os
 import time
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -88,6 +88,9 @@ class QueryResponse(BaseModel):
     retrieved_images: List[RetrievedImage]
     latency_ms: float
     transcript: Optional[str] = None  # 语音接口：ASR 原文；文本接口为 null
+    asr_detected_language: Optional[str] = None
+    asr_language_probability: Optional[float] = None
+    asr_segments: Optional[List[Dict[str, Any]]] = None  # {start, end, text} 分段，可解释 ASR
 
 
 # ---------- 工具函数 ----------
@@ -269,7 +272,7 @@ async def query_by_voice(
     try:
         import tempfile
 
-        from src.speech_asr import transcribe_file
+        from src.speech_asr import transcribe_file_with_meta
     except ImportError as e:
         raise HTTPException(status_code=501, detail=f"语音识别依赖未就绪: {e}") from e
 
@@ -283,7 +286,8 @@ async def query_by_voice(
         tmp.write(content)
         tmp.flush()
         tmp.close()
-        transcript = transcribe_file(tmp_path, config_path="config.yaml")
+        asr_meta = transcribe_file_with_meta(tmp_path, config_path="config.yaml")
+        transcript = (asr_meta.get("text") or "").strip()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"语音识别失败: {e}") from e
     finally:
@@ -317,6 +321,9 @@ async def query_by_voice(
         retrieved_images=format_retrieved(retrieved, include_base64=include_base64),
         latency_ms=round(latency_ms, 1),
         transcript=transcript.strip(),
+        asr_detected_language=asr_meta.get("detected_language"),
+        asr_language_probability=asr_meta.get("language_probability"),
+        asr_segments=asr_meta.get("segments"),
     )
 
 

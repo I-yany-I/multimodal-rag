@@ -10,7 +10,7 @@ speech_asr.py
 from __future__ import annotations
 
 import os
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from src.utils import load_config
 
@@ -56,9 +56,10 @@ def get_whisper_model(config_path: str = "config.yaml"):
     return _model_cache
 
 
-def transcribe_file(audio_path: str, config_path: str = "config.yaml") -> str:
+def transcribe_file_with_meta(audio_path: str, config_path: str = "config.yaml") -> Dict[str, Any]:
     """
-    将音频文件转写为文本（自动语言检测，也可在 config 中指定 speech.language）。
+    转写并返回结构化信息：全文、检测语种、分段时间轴（用于可解释展示与 API）。
+    说明：仍以「语音→文本→CLIP 检索」为主，不引入与图像不对齐的音频塔嵌入。
     """
     if not audio_path or not os.path.isfile(audio_path):
         raise ValueError("无效的音频文件路径")
@@ -74,13 +75,64 @@ def transcribe_file(audio_path: str, config_path: str = "config.yaml") -> str:
 
     beam_size = int(sc.get("beam_size", 5))
     vad_filter = bool(sc.get("vad_filter", True))
+    want_ts = bool(sc.get("return_timestamps", True))
 
-    segments, _info = model.transcribe(
+    segments_iter, info = model.transcribe(
         audio_path,
         language=language,
         beam_size=beam_size,
         vad_filter=vad_filter,
     )
-    parts = [seg.text for seg in segments]
+
+    parts: List[str] = []
+    seg_rows: List[Dict[str, Any]] = []
+    for seg in segments_iter:
+        parts.append(seg.text)
+        if want_ts:
+            seg_rows.append(
+                {
+                    "start": round(float(seg.start), 2),
+                    "end": round(float(seg.end), 2),
+                    "text": (seg.text or "").strip(),
+                }
+            )
+
     text = "".join(parts).strip()
-    return text
+    lang = getattr(info, "language", None)
+    lang_p = getattr(info, "language_probability", None)
+    try:
+        lang_p_f = float(lang_p) if lang_p is not None else None
+    except (TypeError, ValueError):
+        lang_p_f = None
+
+    return {
+        "text": text,
+        "detected_language": lang,
+        "language_probability": lang_p_f,
+        "segments": seg_rows,
+    }
+
+
+def format_transcription_display(meta: Dict[str, Any], config_path: str = "config.yaml") -> str:
+    """Gradio 用：拼装「语种 + 全文 + 分段时间轴」。"""
+    sc = _speech_cfg(config_path)
+    show_lang = bool(sc.get("show_language_line", True))
+    lines: List[str] = []
+    if show_lang and meta.get("detected_language"):
+        lp = meta.get("language_probability")
+        if lp is not None:
+            lines.append(f"【检测语种】{meta['detected_language']}（confidence≈{float(lp):.2f}）")
+        else:
+            lines.append(f"【检测语种】{meta['detected_language']}")
+    lines.append("【全文】\n" + (meta.get("text") or "").strip())
+    segs = meta.get("segments") or []
+    if segs:
+        lines.append("\n【分段时间轴】")
+        for s in segs:
+            lines.append(f"[{s['start']:.2f}s – {s['end']:.2f}s] {s.get('text', '')}")
+    return "\n".join(lines).strip()
+
+
+def transcribe_file(audio_path: str, config_path: str = "config.yaml") -> str:
+    """仅返回全文；内部复用 transcribe_file_with_meta。"""
+    return transcribe_file_with_meta(audio_path, config_path)["text"]

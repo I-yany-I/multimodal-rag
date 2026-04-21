@@ -53,3 +53,6 @@ speech:
   language: null               # null 表示自动检测（中英混合场景）
   beam_size: 5
   vad_filter: true             # 过滤静音，减少噪声段
+  # 以下为「可解释 ASR」：便于答辩/简历说明，不增加音频塔复杂度
+  return_timestamps: true      # API/Gradio 是否返回分段时间轴
+  show_language_line: true     # 是否在 Gradio 识别区展示检测语种与置信度
