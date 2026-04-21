@@ -95,6 +95,20 @@ python build_personal_index.py
 
 语音链路：**音频 → ASR 文本 → 与文本问答相同的 CLIP 检索与 Qwen2-VL 生成**（不在此仓库训练语音模型）。
 
+## 文档索引
+
+- [多模态输入与语音链路（VLM 实际吃什么）](docs/多模态输入与语音链路.md)
+- [上线部署指南（Docker / 云主机 / HF Spaces）](docs/部署指南.md)
+
+## 演示用个人图库占位图（合规网络下载）
+
+没有真机照片时，可用 **Lorem Picsum 固定 ID** 占位图（非真实隐私生活照）：
+
+```bash
+python scripts/seed_demo_personal_images.py
+python build_personal_index.py
+```
+
 ## 功能演示
 
 ### 文本问答
@@ -186,6 +200,10 @@ multimodal-rag/
 ├── build_index.py           # COCO 演示离线建库
 ├── build_personal_index.py  # 个人图库离线建库
 ├── evaluate.py         # 检索评估脚本
+├── scripts/            # 辅助脚本（如演示占位图）
+├── docs/               # 设计与部署说明
+├── Dockerfile
+├── docker-compose.yml
 ├── config.yaml         # 配置文件
 └── requirements.txt
 ```
