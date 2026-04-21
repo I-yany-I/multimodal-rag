@@ -41,3 +41,15 @@ personal_library:
   # 示例见 data/personal_notes.example.json
   notes_path: "data/personal_notes.json"
   max_images: 2000
+
+# 语音入口：faster-whisper 本地转写 → 与文本问答共用检索与生成管线
+speech:
+  enabled: true
+  # tiny / base / small / medium / large-v3 等；显存紧张可改为 tiny 或 base
+  model_size: "base"
+  device: "cuda"              # cuda 不可用时 speech_asr 会回退 cpu
+  compute_type: "float16"    # GPU；CPU 时用 compute_type_cpu
+  compute_type_cpu: "int8"
+  language: null               # null 表示自动检测（中英混合场景）
+  beam_size: 5
+  vad_filter: true             # 过滤静音，减少噪声段

@@ -48,26 +48,22 @@ def check_index_ready(library: Optional[str] = None) -> bool:
     return os.path.exists(cfg["retrieval"]["index_path"]) and os.path.exists(cfg["retrieval"]["metadata_path"])
 
 
-# ---------- 核心推理函数 ----------
-
-def text_query_fn(query: str, top_k: int, library: str):
-    """文本问答入口。"""
-    if not query.strip():
-        return "请输入问题。", [], ""
+def _run_text_query(query: str, top_k: int, library: str):
+    """文本检索 + 生成；返回 (answer, images_out, retrieved_text)。"""
     lib = _normalize_library(library)
     if not check_index_ready(lib):
         if lib == "personal":
-            return (
+            msg = (
                 "个人图库索引未就绪：请将照片放入 `data/personal_images/` 后运行 "
-                "`python build_personal_index.py`。",
-                [],
-                "",
+                "`python build_personal_index.py`。"
             )
-        return "请先运行 `python build_index.py` 构建 COCO 演示索引！", [], ""
+        else:
+            msg = "请先运行 `python build_index.py` 构建 COCO 演示索引！"
+        return msg, [], ""
 
     pipeline = get_pipeline(lib)
     answer, retrieved = pipeline.query_by_text(
-        query,
+        query.strip(),
         top_k=top_k,
         max_images=top_k,
     )
@@ -87,6 +83,15 @@ def text_query_fn(query: str, top_k: int, library: str):
 
     retrieved_text = "\n\n".join(captions_out)
     return answer, images_out, retrieved_text
+
+
+# ---------- 核心推理函数 ----------
+
+def text_query_fn(query: str, top_k: int, library: str):
+    """文本问答入口。"""
+    if not query.strip():
+        return "请输入问题。", [], ""
+    return _run_text_query(query, top_k, library)
 
 
 def image_query_fn(image: Optional[Image.Image], question: str, top_k: int, library: str):
@@ -130,6 +135,39 @@ def image_query_fn(image: Optional[Image.Image], question: str, top_k: int, libr
 
     retrieved_text = "\n\n".join(captions_out)
     return answer, images_out, retrieved_text
+
+
+def voice_query_fn(
+    audio_path: Optional[str],
+    supplement: str,
+    top_k: int,
+    library: str,
+):
+    """
+    语音问答：ASR 转写后与「文本问答」共用检索与生成。
+    audio_path: Gradio Audio(type='filepath') 返回的临时 wav 路径。
+    """
+    if not audio_path or not str(audio_path).strip():
+        return "", "请先录制或上传一段音频。", [], ""
+
+    try:
+        from src.speech_asr import transcribe_file
+
+        transcript = transcribe_file(str(audio_path), config_path="config.yaml")
+    except RuntimeError as e:
+        return "", f"语音识别不可用：{e}", [], ""
+    except Exception as e:
+        return "", f"语音识别失败（可检查 ffmpeg 是否已安装）：{e}", [], ""
+
+    if not (transcript or "").strip():
+        return "", "未识别到有效语音内容，请重试或检查麦克风/音量。", [], ""
+
+    query = transcript.strip()
+    if supplement and supplement.strip():
+        query = f"{query}。补充说明：{supplement.strip()}"
+
+    answer, images_out, retrieved_text = _run_text_query(query, top_k, library)
+    return transcript, answer, images_out, retrieved_text
 
 
 # ---------- Gradio UI ----------
@@ -229,6 +267,7 @@ with gr.Blocks(
 <span class="mm-badge">FAISS</span>
 <span class="mm-badge">Qwen2-VL</span>
 <span class="mm-badge">Gradio</span>
+<span class="mm-badge">faster-whisper</span>
 </div>
 
 </div>
@@ -237,7 +276,7 @@ with gr.Blocks(
 
     gr.Markdown(
         """
-**图库选择**：「COCO 演示库」用于复现论文式检索；「个人图库」用于本地生活照片（独立索引，默认不提交照片到 Git）。
+**图库选择**：「COCO 演示库」用于复现论文式检索；「个人图库」用于本地生活照片（独立索引，默认不提交照片到 Git）。**语音**：本地 ASR 转写后走同一套检索与 Qwen2-VL 生成（需 `pip install faster-whisper`，建议系统安装 **ffmpeg**）。
 """
     )
     library_radio = gr.Radio(
@@ -297,12 +336,12 @@ with gr.Blocks(
         gr.Examples(
             label="示例一键填入",
             examples=[
-                ["一只猫坐在沙发上", 3],
-                ["海边的日落风景", 3],
-                ["运动员在比赛中", 3],
-                ["一个小孩在公园玩耍", 3],
+                ["一只猫坐在沙发上", 3, "coco"],
+                ["海边的日落风景", 3, "coco"],
+                ["运动员在比赛中", 3, "coco"],
+                ["一个小孩在公园玩耍", 3, "coco"],
             ],
-            inputs=[text_input, top_k_slider],
+            inputs=[text_input, top_k_slider, library_radio],
         )
 
     with gr.Tab("以图搜图"):
@@ -354,13 +393,70 @@ with gr.Blocks(
             outputs=[image_answer, image_gallery, image_retrieved],
         )
 
+    with gr.Tab("语音问答"):
+        gr.Markdown(
+            "录制或上传音频，系统先用 **faster-whisper** 转写成文本，再按当前所选图库检索并生成回答。"
+            " 可在下方补充文字，拼接到识别结果后一起参与检索。"
+        )
+        with gr.Row(equal_height=False):
+            with gr.Column(scale=5, min_width=280):
+                with gr.Group():
+                    voice_audio = gr.Audio(
+                        label="语音输入（麦克风或上传文件）",
+                        sources=["microphone", "upload"],
+                        type="filepath",
+                    )
+                    voice_supplement = gr.Textbox(
+                        label="补充说明（可选，会拼在识别文字之后）",
+                        placeholder="例如：重点找有猫的照片",
+                        lines=2,
+                    )
+                    top_k_slider3 = gr.Slider(
+                        1, 5, value=3, step=1,
+                        label="检索图像数量 (top-k)",
+                    )
+                voice_btn = gr.Button("识别语音并检索回答", variant="primary", size="lg")
+
+            with gr.Column(scale=7, min_width=320):
+                with gr.Group():
+                    voice_transcript = gr.Textbox(
+                        label="识别文本",
+                        lines=3,
+                        interactive=False,
+                    )
+                    voice_answer = gr.Textbox(
+                        label="模型回答",
+                        lines=6,
+                        interactive=False,
+                        elem_classes=["mm-answer"],
+                    )
+                    voice_gallery = gr.Gallery(
+                        label="检索到的图像",
+                        columns=3,
+                        height=320,
+                        object_fit="contain",
+                        show_label=True,
+                        elem_classes=["mm-gallery"],
+                    )
+                    voice_retrieved = gr.Textbox(
+                        label="检索详情（文件名 · 分数 · 标注）",
+                        lines=5,
+                        interactive=False,
+                    )
+
+        voice_btn.click(
+            fn=voice_query_fn,
+            inputs=[voice_audio, voice_supplement, top_k_slider3, library_radio],
+            outputs=[voice_transcript, voice_answer, voice_gallery, voice_retrieved],
+        )
+
     gr.Markdown(
         """
 <div class="mm-foot">
 
-**使用前**：COCO 库执行 `python build_index.py`；个人图库将照片放入 `data/personal_images/` 后执行 `python build_personal_index.py`（可选 `personal_notes.json` 备注）。
+**使用前**：COCO 库执行 `python build_index.py`；个人图库将照片放入 `data/personal_images/` 后执行 `python build_personal_index.py`（可选 `personal_notes.json` 备注）。语音依赖 `faster-whisper` 与 **ffmpeg**（见 README）。
 
-**数据流**：Query → CLIP 编码 → FAISS 召回 top-k → Qwen2-VL 读图与标注并生成文本（不生成新图像）。
+**数据流（文本/语音）**：Query → CLIP 文本编码 → FAISS 召回 → 重排/阈值 → Qwen2-VL；**语音**先经 ASR 得到 Query。
 
 </div>
         """

@@ -87,6 +87,7 @@ class QueryResponse(BaseModel):
     answer: str
     retrieved_images: List[RetrievedImage]
     latency_ms: float
+    transcript: Optional[str] = None  # 语音接口：ASR 原文；文本接口为 null
 
 
 # ---------- 工具函数 ----------
@@ -137,10 +138,16 @@ def health():
     p_ip = pl.get("index_path", "data/personal_faiss.index")
     p_mp = pl.get("metadata_path", "data/personal_metadata.json")
     personal_ready = os.path.exists(p_ip) and os.path.exists(p_mp)
+    try:
+        import faster_whisper  # noqa: F401
+        asr_ready = True
+    except Exception:
+        asr_ready = False
     return {
         "status": "ok" if (coco_ready or personal_ready) else "index_not_ready",
         "index_ready_coco": coco_ready,
         "index_ready_personal": personal_ready,
+        "asr_ready": asr_ready,
         "message": "至少一个图库索引就绪" if (coco_ready or personal_ready) else "请运行 build_index.py 或 build_personal_index.py",
     }
 
@@ -246,6 +253,71 @@ def stats(library: str = "coco"):
         "index_path": index_path,
         "has_captions": sum(1 for m in retriever.metadata if m.get("caption")),
     }
+
+
+@app.post("/query/voice", response_model=QueryResponse, summary="语音问答（ASR + 文本检索）")
+async def query_by_voice(
+    file: UploadFile = File(..., description="音频文件 wav/mp3/webm 等"),
+    supplement: str = Form(default="", description="可选，拼在识别文字之后"),
+    top_k: int = Form(default=3, ge=1, le=10),
+    include_base64: bool = Form(default=False),
+    library: str = Form(default="coco"),
+):
+    """
+    上传音频 → faster-whisper 转写 → 与 `/query/text` 相同检索与生成链路。
+    """
+    try:
+        import tempfile
+
+        from src.speech_asr import transcribe_file
+    except ImportError as e:
+        raise HTTPException(status_code=501, detail=f"语音识别依赖未就绪: {e}") from e
+
+    suffix = os.path.splitext(file.filename or "")[1] or ".wav"
+    tmp_path = None
+    t_all = time.time()
+    try:
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        tmp_path = tmp.name
+        content = await file.read()
+        tmp.write(content)
+        tmp.flush()
+        tmp.close()
+        transcript = transcribe_file(tmp_path, config_path="config.yaml")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"语音识别失败: {e}") from e
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    if not (transcript or "").strip():
+        raise HTTPException(status_code=400, detail="未识别到有效语音内容")
+
+    query = transcript.strip()
+    if supplement and supplement.strip():
+        query = f"{query}。补充说明：{supplement.strip()}"
+
+    try:
+        pipeline = get_pipeline(library)
+        answer, retrieved = pipeline.query_by_text(
+            query,
+            top_k=top_k,
+            max_images=top_k,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+
+    latency_ms = (time.time() - t_all) * 1000
+    return QueryResponse(
+        query=query,
+        answer=answer,
+        retrieved_images=format_retrieved(retrieved, include_base64=include_base64),
+        latency_ms=round(latency_ms, 1),
+        transcript=transcript.strip(),
+    )
 
 
 if __name__ == "__main__":

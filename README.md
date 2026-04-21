@@ -85,6 +85,16 @@ python build_personal_index.py
 
 个人索引文件路径由 `config.yaml` 的 `personal_library` 段配置，与 COCO 的 `retrieval.index_path` 互不覆盖。
 
+## 语音问答（faster-whisper → 文本检索）
+
+1. 安装依赖：`pip install -r requirements.txt`（已包含 `faster-whisper`）。  
+2. **强烈建议**安装 [ffmpeg](https://ffmpeg.org/download.html) 并加入系统 `PATH`，以支持常见音频容器（如浏览器录制的 webm/mp3）。  
+3. 可在 `config.yaml` 的 `speech` 段调整 **`model_size`**（`tiny`/`base`/`small`…）与 **`device`**；与 Qwen2-VL 同卡时若显存紧张请改用 **`tiny` 或 `base`**。  
+4. **Gradio**：打开 **「语音问答」** Tab，录制或上传音频后点击识别。  
+5. **API**：`POST /query/voice`，`multipart/form-data` 上传 `file`（音频），可选 `supplement`、`top_k`、`library`。
+
+语音链路：**音频 → ASR 文本 → 与文本问答相同的 CLIP 检索与 Qwen2-VL 生成**（不在此仓库训练语音模型）。
+
 ## 功能演示
 
 ### 文本问答
@@ -169,6 +179,7 @@ multimodal-rag/
 │   ├── retriever.py    # FAISS 向量检索
 │   ├── generator.py    # Qwen2-VL 多模态生成
 │   ├── pipeline.py     # 端到端 RAG 流程
+│   ├── speech_asr.py   # faster-whisper 语音转写
 │   └── utils.py        # 工具函数
 ├── app.py              # Gradio 演示界面
 ├── api.py              # FastAPI REST 接口

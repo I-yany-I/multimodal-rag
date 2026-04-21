@@ -13,3 +13,4 @@ requests>=2.31.0
 bitsandbytes>=0.41.0
 accelerate>=0.30.0
 qwen-vl-utils>=0.0.2
+faster-whisper>=1.0.0
