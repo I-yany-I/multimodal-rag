@@ -20,6 +20,13 @@ data/*.zip
 *.index
 models/
 
+# 个人图库：不上传真实照片与本地备注（示例文件 personal_notes.example.json 可提交）
+data/personal_images/**
+!data/personal_images/.gitkeep
+data/personal_notes.json
+data/personal_metadata.json
+data/personal_index_manifest.json
+
 # IDE
 .vscode/
 .idea/

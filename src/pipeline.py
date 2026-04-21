@@ -157,19 +157,32 @@ class MultimodalRAGPipeline:
     3. generate: 用 Qwen2-VL 基于检索图像生成回答
     """
 
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = "config.yaml", library: str = "coco"):
+        """
+        library:
+            - "coco": 使用 config.retrieval 的索引（默认 COCO 演示库）
+            - "personal": 使用 config.personal_library 的独立索引（本地个人图库）
+        """
         with open(config_path, "r", encoding="utf-8") as f:
             self.cfg = yaml.safe_load(f)
 
         clip_cfg = self.cfg["clip"]
         gen_cfg = self.cfg["generator"]
         ret_cfg = self.cfg["retrieval"]
+        self.library = (library or "coco").strip().lower()
 
         self.encoder = make_encoder(clip_cfg)
         self.retriever = FAISSRetriever()
+        if self.library == "personal":
+            pl = self.cfg.get("personal_library") or {}
+            index_path = pl.get("index_path", "data/personal_faiss.index")
+            metadata_path = pl.get("metadata_path", "data/personal_metadata.json")
+        else:
+            index_path = ret_cfg["index_path"]
+            metadata_path = ret_cfg["metadata_path"]
         self.retriever.load(
-            index_path=ret_cfg["index_path"],
-            metadata_path=ret_cfg["metadata_path"],
+            index_path=index_path,
+            metadata_path=metadata_path,
         )
         
         # 与编码器进行一次维度总账核对

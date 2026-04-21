@@ -13,7 +13,7 @@ import base64
 import io
 import os
 import time
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,16 +33,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 延迟初始化 pipeline
-_pipeline = None
+# 延迟初始化 pipeline（按图库分实例）
+_pipelines: Dict[str, object] = {}
 
 
-def get_pipeline():
-    global _pipeline
-    if _pipeline is None:
+def _normalize_library(library: Optional[str]) -> str:
+    key = (library or "coco").strip().lower()
+    return key if key in ("coco", "personal") else "coco"
+
+
+def get_pipeline(library: Optional[str] = None):
+    key = _normalize_library(library)
+    global _pipelines
+    if key not in _pipelines:
         from src.pipeline import MultimodalRAGPipeline
-        _pipeline = MultimodalRAGPipeline(config_path="config.yaml")
-    return _pipeline
+
+        _pipelines[key] = MultimodalRAGPipeline(config_path="config.yaml", library=key)
+    return _pipelines[key]
 
 
 # ---------- 数据模型 ----------
@@ -51,13 +58,18 @@ class TextQueryRequest(BaseModel):
     query: str
     top_k: int = Field(default=5, ge=1, le=10)
     include_base64: bool = False
+    library: str = Field(
+        default="coco",
+        description="coco=COCO 演示索引；personal=个人图库独立索引（需先 build_personal_index）",
+    )
 
     class Config:
         json_schema_extra = {
             "example": {
                 "query": "一只猫坐在沙发上",
                 "top_k": 3,
-                "include_base64": False
+                "include_base64": False,
+                "library": "coco",
             }
         }
 
@@ -116,16 +128,20 @@ def root():
 @app.get("/health", summary="服务健康状态")
 def health():
     import yaml
-    with open("config.yaml") as f:
+    with open("config.yaml", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    index_ready = (
-        os.path.exists(cfg["retrieval"]["index_path"]) and
-        os.path.exists(cfg["retrieval"]["metadata_path"])
+    coco_ready = os.path.exists(cfg["retrieval"]["index_path"]) and os.path.exists(
+        cfg["retrieval"]["metadata_path"]
     )
+    pl = cfg.get("personal_library") or {}
+    p_ip = pl.get("index_path", "data/personal_faiss.index")
+    p_mp = pl.get("metadata_path", "data/personal_metadata.json")
+    personal_ready = os.path.exists(p_ip) and os.path.exists(p_mp)
     return {
-        "status": "ok" if index_ready else "index_not_ready",
-        "index_ready": index_ready,
-        "message": "索引就绪" if index_ready else "请先运行 python build_index.py",
+        "status": "ok" if (coco_ready or personal_ready) else "index_not_ready",
+        "index_ready_coco": coco_ready,
+        "index_ready_personal": personal_ready,
+        "message": "至少一个图库索引就绪" if (coco_ready or personal_ready) else "请运行 build_index.py 或 build_personal_index.py",
     }
 
 
@@ -142,7 +158,7 @@ def query_by_text(request: TextQueryRequest):
 
     t0 = time.time()
     try:
-        pipeline = get_pipeline()
+        pipeline = get_pipeline(request.library)
         answer, retrieved = pipeline.query_by_text(
             request.query,
             top_k=request.top_k,
@@ -166,6 +182,7 @@ def query_by_image(
     question: str = Form(default="请描述图像中的主要内容。", description="关于图像的问题"),
     top_k: int = Form(default=3, description="检索图像数量"),
     include_base64: bool = Form(default=False, description="是否返回 base64 图像"),
+    library: str = Form(default="coco", description="coco 或 personal"),
 ):
     """
     上传图像，检索相似图像并回答问题。
@@ -183,7 +200,7 @@ def query_by_image(
 
     t0 = time.time()
     try:
-        pipeline = get_pipeline()
+        pipeline = get_pipeline(library)
         answer, retrieved = pipeline.query_by_image(
             image,
             question,
@@ -203,21 +220,30 @@ def query_by_image(
 
 
 @app.get("/stats", summary="索引统计信息")
-def stats():
-    """返回当前向量数据库的统计信息。"""
+def stats(library: str = "coco"):
+    """返回指定图库的向量索引统计信息。library=coco|personal"""
     import yaml
     from src.retriever import FAISSRetriever
-    with open("config.yaml") as f:
+    with open("config.yaml", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    ret_cfg = cfg["retrieval"]
-    if not os.path.exists(ret_cfg["index_path"]):
-        raise HTTPException(status_code=503, detail="索引未构建，请先运行 build_index.py")
+    key = _normalize_library(library)
+    if key == "personal":
+        pl = cfg.get("personal_library") or {}
+        index_path = pl.get("index_path", "data/personal_faiss.index")
+        metadata_path = pl.get("metadata_path", "data/personal_metadata.json")
+    else:
+        ret_cfg = cfg["retrieval"]
+        index_path = ret_cfg["index_path"]
+        metadata_path = ret_cfg["metadata_path"]
+    if not os.path.exists(index_path):
+        raise HTTPException(status_code=503, detail=f"索引未构建: {index_path}")
     retriever = FAISSRetriever()
-    retriever.load(ret_cfg["index_path"], ret_cfg["metadata_path"])
+    retriever.load(index_path, metadata_path)
     return {
+        "library": key,
         "total_images": retriever.index.ntotal,
         "vector_dim": retriever.index.d,
-        "index_path": ret_cfg["index_path"],
+        "index_path": index_path,
         "has_captions": sum(1 for m in retriever.metadata if m.get("caption")),
     }
 

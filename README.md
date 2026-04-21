@@ -69,6 +69,22 @@ uvicorn api:app --host 0.0.0.0 --port 8000
 
 API 文档：http://localhost:8000/docs
 
+## 个人图库（本地生活向 · 多模态落地）
+
+与 COCO 演示库并行的一套 **独立索引**：适合「旅行 / 聚餐 / 校园生活」等私有照片，用自然语言回忆「那张在海边日落拍的照片」。**默认不将照片提交到 Git**（见 `.gitignore`）。
+
+1. 将照片放入 `data/personal_images/`（可分子目录；支持 jpg/png/webp 等）。
+2. （推荐）复制 `data/personal_notes.example.json` 为 `data/personal_notes.json`，按 **文件名 basename** 写中文备注，检索重排会融合备注文本，更容易搜到「语义上相关但视觉不显眼」的场景。
+3. 建索引：
+
+```bash
+python build_personal_index.py
+```
+
+4. 启动 `python app.py`，在页面 **「当前检索图库」** 中切换到 **个人图库**；API 请求体增加 `"library": "personal"`（文本接口）或表单字段 `library=personal`（图像接口）。
+
+个人索引文件路径由 `config.yaml` 的 `personal_library` 段配置，与 COCO 的 `retrieval.index_path` 互不覆盖。
+
 ## 功能演示
 
 ### 文本问答
@@ -156,7 +172,8 @@ multimodal-rag/
 │   └── utils.py        # 工具函数
 ├── app.py              # Gradio 演示界面
 ├── api.py              # FastAPI REST 接口
-├── build_index.py      # 离线建库脚本
+├── build_index.py           # COCO 演示离线建库
+├── build_personal_index.py  # 个人图库离线建库
 ├── evaluate.py         # 检索评估脚本
 ├── config.yaml         # 配置文件
 └── requirements.txt

@@ -17,7 +17,10 @@ def load_config(config_path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def collect_image_paths(images_dir: str, extensions: tuple = (".jpg", ".jpeg", ".png")) -> List[str]:
+def collect_image_paths(
+    images_dir: str,
+    extensions: tuple = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"),
+) -> List[str]:
     """递归收集目录下所有图像路径。"""
     paths = []
     for root, _, files in os.walk(images_dir):

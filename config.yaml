@@ -31,3 +31,13 @@ data:
   images_dir: "data/images"
   # 使用COCO 2017 val 子集 (5000张演示用)
   max_images: 5000
+
+# 个人图库（本地生活向）：与 COCO 演示库使用独立索引，便于隐私与版本管理
+personal_library:
+  images_dir: "data/personal_images"
+  index_path: "data/personal_faiss.index"
+  metadata_path: "data/personal_metadata.json"
+  # 可选：为照片 basename 配置「你的备注」，用于检索侧文本匹配与 VLM 提示
+  # 示例见 data/personal_notes.example.json
+  notes_path: "data/personal_notes.json"
+  max_images: 2000

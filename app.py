@@ -10,43 +10,62 @@ Gradio 演示界面：多模态 RAG 图像问答系统
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import gradio as gr
+import yaml
 from PIL import Image
 
-# 延迟加载 pipeline，避免启动时就占满显存
-_pipeline = None
+# 延迟加载 pipeline（按图库分实例），避免启动时重复加载
+_pipelines: Dict[str, object] = {}
 
 
-def get_pipeline():
-    global _pipeline
-    if _pipeline is None:
+def _normalize_library(library: Optional[str]) -> str:
+    key = (library or "coco").strip().lower()
+    return key if key in ("coco", "personal") else "coco"
+
+
+def get_pipeline(library: Optional[str] = None):
+    """library: coco（COCO 演示库） | personal（本地个人图库，独立索引）"""
+    key = _normalize_library(library)
+    global _pipelines
+    if key not in _pipelines:
         from src.pipeline import MultimodalRAGPipeline
-        _pipeline = MultimodalRAGPipeline(config_path="config.yaml")
-    return _pipeline
+
+        _pipelines[key] = MultimodalRAGPipeline(config_path="config.yaml", library=key)
+    return _pipelines[key]
 
 
-def check_index_ready() -> bool:
-    import yaml
-    with open("config.yaml", "r") as f:
+def check_index_ready(library: Optional[str] = None) -> bool:
+    with open("config.yaml", "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    return (
-        os.path.exists(cfg["retrieval"]["index_path"]) and
-        os.path.exists(cfg["retrieval"]["metadata_path"])
-    )
+    key = _normalize_library(library)
+    if key == "personal":
+        pl = cfg.get("personal_library") or {}
+        ip = pl.get("index_path", "data/personal_faiss.index")
+        mp = pl.get("metadata_path", "data/personal_metadata.json")
+        return os.path.exists(ip) and os.path.exists(mp)
+    return os.path.exists(cfg["retrieval"]["index_path"]) and os.path.exists(cfg["retrieval"]["metadata_path"])
 
 
 # ---------- 核心推理函数 ----------
 
-def text_query_fn(query: str, top_k: int):
+def text_query_fn(query: str, top_k: int, library: str):
     """文本问答入口。"""
     if not query.strip():
         return "请输入问题。", [], ""
-    if not check_index_ready():
-        return "请先运行 `python build_index.py` 构建图像索引！", [], ""
+    lib = _normalize_library(library)
+    if not check_index_ready(lib):
+        if lib == "personal":
+            return (
+                "个人图库索引未就绪：请将照片放入 `data/personal_images/` 后运行 "
+                "`python build_personal_index.py`。",
+                [],
+                "",
+            )
+        return "请先运行 `python build_index.py` 构建 COCO 演示索引！", [], ""
 
-    pipeline = get_pipeline()
+    pipeline = get_pipeline(lib)
     answer, retrieved = pipeline.query_by_text(
         query,
         top_k=top_k,
@@ -70,17 +89,25 @@ def text_query_fn(query: str, top_k: int):
     return answer, images_out, retrieved_text
 
 
-def image_query_fn(image: Optional[Image.Image], question: str, top_k: int):
+def image_query_fn(image: Optional[Image.Image], question: str, top_k: int, library: str):
     """以图搜图 + 问答入口。"""
     if image is None:
         return "请上传一张图像。", [], ""
-    if not check_index_ready():
-        return "请先运行 `python build_index.py` 构建图像索引！", [], ""
+    lib = _normalize_library(library)
+    if not check_index_ready(lib):
+        if lib == "personal":
+            return (
+                "个人图库索引未就绪：请将照片放入 `data/personal_images/` 后运行 "
+                "`python build_personal_index.py`。",
+                [],
+                "",
+            )
+        return "请先运行 `python build_index.py` 构建 COCO 演示索引！", [], ""
 
     if not question.strip():
         question = "请描述图像中的主要内容。"
 
-    pipeline = get_pipeline()
+    pipeline = get_pipeline(lib)
     answer, retrieved = pipeline.query_by_image(
         image,
         question,
@@ -208,6 +235,20 @@ with gr.Blocks(
         """
     )
 
+    gr.Markdown(
+        """
+**图库选择**：「COCO 演示库」用于复现论文式检索；「个人图库」用于本地生活照片（独立索引，默认不提交照片到 Git）。
+"""
+    )
+    library_radio = gr.Radio(
+        choices=[
+            ("COCO 演示库（默认）", "coco"),
+            ("个人图库（本地生活向）", "personal"),
+        ],
+        value="coco",
+        label="当前检索图库",
+    )
+
     with gr.Tab("文本问答"):
         gr.Markdown("输入自然语言问题，系统将检索最相关的图块并由多模态模型汇总作答。")
         with gr.Row(equal_height=False):
@@ -249,7 +290,7 @@ with gr.Blocks(
 
         text_btn.click(
             fn=text_query_fn,
-            inputs=[text_input, top_k_slider],
+            inputs=[text_input, top_k_slider, library_radio],
             outputs=[text_answer, text_gallery, text_retrieved],
         )
 
@@ -309,7 +350,7 @@ with gr.Blocks(
 
         image_btn.click(
             fn=image_query_fn,
-            inputs=[image_input, image_question, top_k_slider2],
+            inputs=[image_input, image_question, top_k_slider2, library_radio],
             outputs=[image_answer, image_gallery, image_retrieved],
         )
 
@@ -317,7 +358,7 @@ with gr.Blocks(
         """
 <div class="mm-foot">
 
-**使用前**请在本项目目录执行 `python build_index.py` 构建向量索引（首次或更换 CLIP 模型后需重建）。
+**使用前**：COCO 库执行 `python build_index.py`；个人图库将照片放入 `data/personal_images/` 后执行 `python build_personal_index.py`（可选 `personal_notes.json` 备注）。
 
 **数据流**：Query → CLIP 编码 → FAISS 召回 top-k → Qwen2-VL 读图与标注并生成文本（不生成新图像）。
 
