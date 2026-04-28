@@ -21,7 +21,6 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime
 from typing import Dict, List
 
 import numpy as np
@@ -56,23 +55,12 @@ def _extensions() -> tuple:
 
 
 def build_personal_metadata(image_paths: List[str], notes: Dict[str, str]) -> List[dict]:
-    """为个人图库构造 metadata：caption 融合备注与本地修改时间，供重排中文本项使用。"""
+    """为个人图库构造 metadata：仅在有 personal_notes 时写入 caption，供重排与 VLM 证据。"""
     meta: List[dict] = []
     for path in image_paths:
         fname = os.path.basename(path)
         note = notes.get(fname, "").strip()
-        try:
-            mtime = os.path.getmtime(path)
-            mtime_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            mtime_str = ""
-        parts = ["[个人图库]"]
-        if note:
-            parts.append(f"备注：{note}")
-        if mtime_str:
-            parts.append(f"本地修改时间：{mtime_str}")
-        parts.append(f"文件：{fname}")
-        caption = " ".join(parts)
+        caption = f"备注：{note}" if note else ""
         meta.append(
             {
                 "image_path": os.path.abspath(path),

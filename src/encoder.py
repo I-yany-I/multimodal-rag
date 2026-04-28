@@ -33,6 +33,14 @@ class CLIPEncoder:
         self.processor = CLIPProcessor.from_pretrained(model_name)
         self.model.eval()
 
+    def _text_tokenize_kwargs(self) -> dict:
+        """CLIP 文本长度上限固定为 max_position_embeddings（常用 77），超长需截断。"""
+        tc = getattr(self.model.config, "text_config", None)
+        ml = getattr(tc, "max_position_embeddings", None) if tc is not None else None
+        if ml is None:
+            ml = 77
+        return {"truncation": True, "max_length": int(ml)}
+
     @property
     def embedding_dim(self) -> int:
         """
@@ -115,7 +123,10 @@ class CLIPEncoder:
         """
         编码单条文本 query，返回 shape=(1, D) 的 float32 归一化向量。
         """
-        inputs = self.processor(text=[text], return_tensors="pt", padding=True).to(self.device)
+        kw = self._text_tokenize_kwargs()
+        inputs = self.processor(
+            text=[text], return_tensors="pt", padding=True, **kw
+        ).to(self.device)
         feats = self._get_text_embeds(inputs)
         feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats.cpu().float().numpy()
@@ -125,7 +136,10 @@ class CLIPEncoder:
         """批量编码多条文本，返回 shape=(N, D)。"""
         if not texts:
             return np.zeros((0, self.embedding_dim), dtype=np.float32)
-        inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(self.device)
+        kw = self._text_tokenize_kwargs()
+        inputs = self.processor(text=texts, return_tensors="pt", padding=True, **kw).to(
+            self.device
+        )
         feats = self._get_text_embeds(inputs)
         feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats.cpu().float().numpy()
@@ -153,6 +167,13 @@ class SiglipEncoder:
         self.model = SiglipModel.from_pretrained(model_name).to(self.device)
         self.processor = SiglipProcessor.from_pretrained(model_name)
         self.model.eval()
+
+    def _text_tokenize_kwargs(self) -> dict:
+        tc = getattr(self.model.config, "text_config", None)
+        ml = getattr(tc, "max_position_embeddings", None) if tc is not None else None
+        if ml is None:
+            ml = 64
+        return {"truncation": True, "max_length": int(ml)}
 
     @property
     def embedding_dim(self) -> int:
@@ -182,7 +203,10 @@ class SiglipEncoder:
 
     @torch.no_grad()
     def encode_text(self, text: str) -> np.ndarray:
-        inputs = self.processor(text=[text], return_tensors="pt", padding=True).to(self.device)
+        kw = self._text_tokenize_kwargs()
+        inputs = self.processor(
+            text=[text], return_tensors="pt", padding=True, **kw
+        ).to(self.device)
         feats = self.model.get_text_features(**inputs)
         feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats.cpu().float().numpy()
@@ -191,7 +215,10 @@ class SiglipEncoder:
     def encode_texts(self, texts: List[str]) -> np.ndarray:
         if not texts:
             return np.zeros((0, self.embedding_dim), dtype=np.float32)
-        inputs = self.processor(text=texts, return_tensors="pt", padding=True).to(self.device)
+        kw = self._text_tokenize_kwargs()
+        inputs = self.processor(text=texts, return_tensors="pt", padding=True, **kw).to(
+            self.device
+        )
         feats = self.model.get_text_features(**inputs)
         feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats.cpu().float().numpy()

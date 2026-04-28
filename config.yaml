@@ -14,6 +14,8 @@ generator:
   max_new_tokens: 384
   temperature: 0.35            # 略低以更贴检索内容、减少编造
   top_p: 0.9
+  # Qwen2-VL 动态分辨率：多张手机大图会使视觉 token 暴涨，8GB 显存易 OOM；喂给 VLM 前限制长边
+  max_image_long_side: 768
 
 retrieval:
   top_k: 5                     # 送入 LLM 的最终张数

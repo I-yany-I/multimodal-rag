@@ -33,8 +33,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 延迟初始化 pipeline（按图库分实例）
-_pipelines: Dict[str, object] = {}
+# 全局单例：CLIP + Qwen 只加载一次；请求级通过 library 切换检索索引。
+_pipeline = None
 
 
 def _normalize_library(library: Optional[str]) -> str:
@@ -42,14 +42,13 @@ def _normalize_library(library: Optional[str]) -> str:
     return key if key in ("coco", "personal") else "coco"
 
 
-def get_pipeline(library: Optional[str] = None):
-    key = _normalize_library(library)
-    global _pipelines
-    if key not in _pipelines:
+def get_pipeline():
+    global _pipeline
+    if _pipeline is None:
         from src.pipeline import MultimodalRAGPipeline
 
-        _pipelines[key] = MultimodalRAGPipeline(config_path="config.yaml", library=key)
-    return _pipelines[key]
+        _pipeline = MultimodalRAGPipeline(config_path="config.yaml")
+    return _pipeline
 
 
 # ---------- 数据模型 ----------
@@ -168,11 +167,13 @@ def query_by_text(request: TextQueryRequest):
 
     t0 = time.time()
     try:
-        pipeline = get_pipeline(request.library)
+        lib = _normalize_library(request.library)
+        pipeline = get_pipeline()
         answer, retrieved = pipeline.query_by_text(
             request.query,
             top_k=request.top_k,
             max_images=request.top_k,
+            library=lib,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -210,12 +211,14 @@ def query_by_image(
 
     t0 = time.time()
     try:
-        pipeline = get_pipeline(library)
+        lib = _normalize_library(library)
+        pipeline = get_pipeline()
         answer, retrieved = pipeline.query_by_image(
             image,
             question,
             top_k=top_k,
             max_images=top_k,
+            library=lib,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -305,11 +308,13 @@ async def query_by_voice(
         query = f"{query}。补充说明：{supplement.strip()}"
 
     try:
-        pipeline = get_pipeline(library)
+        lib = _normalize_library(library)
+        pipeline = get_pipeline()
         answer, retrieved = pipeline.query_by_text(
             query,
             top_k=top_k,
             max_images=top_k,
+            library=lib,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e

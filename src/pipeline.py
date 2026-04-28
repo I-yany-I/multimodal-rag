@@ -6,6 +6,7 @@ Encode Query → Retrieve Images → Generate Answer
 将 encoder / retriever / generator 串联为统一接口。
 """
 
+import os
 from typing import Any, List, Dict, Optional, Tuple
 import yaml
 import numpy as np
@@ -155,44 +156,55 @@ class MultimodalRAGPipeline:
     1. encode:   用 CLIP 将用户 query（文本/图像）编码为向量
     2. retrieve: 用 FAISS 检索最相似的 top-k 图像
     3. generate: 用 Qwen2-VL 基于检索图像生成回答
+
+    CLIP 与 Qwen2-VL 只构造一次；COCO / 个人图库各用独立 FAISS，按 query 的 library 切换，
+    避免切换图库时重复加载大模型导致显存翻倍。
     """
 
-    def __init__(self, config_path: str = "config.yaml", library: str = "coco"):
+    def __init__(self, config_path: str = "config.yaml", library: Optional[str] = None):
         """
-        library:
-            - "coco": 使用 config.retrieval 的索引（默认 COCO 演示库）
-            - "personal": 使用 config.personal_library 的独立索引（本地个人图库）
+        library 参数已弃用（保留仅为兼容旧代码），检索目标由 query_by_* 的 library 参数指定。
         """
+        _ = library  # 兼容 MultimodalRAGPipeline(..., library="coco")
         with open(config_path, "r", encoding="utf-8") as f:
             self.cfg = yaml.safe_load(f)
 
         clip_cfg = self.cfg["clip"]
         gen_cfg = self.cfg["generator"]
         ret_cfg = self.cfg["retrieval"]
-        self.library = (library or "coco").strip().lower()
+        pl = self.cfg.get("personal_library") or {}
 
         self.encoder = make_encoder(clip_cfg)
-        self.retriever = FAISSRetriever()
-        if self.library == "personal":
-            pl = self.cfg.get("personal_library") or {}
-            index_path = pl.get("index_path", "data/personal_faiss.index")
-            metadata_path = pl.get("metadata_path", "data/personal_metadata.json")
-        else:
-            index_path = ret_cfg["index_path"]
-            metadata_path = ret_cfg["metadata_path"]
-        self.retriever.load(
-            index_path=index_path,
-            metadata_path=metadata_path,
-        )
-        
-        # 与编码器进行一次维度总账核对
         enc_dim = self.encoder.embedding_dim
-        if self.retriever.dim is not None and self.retriever.dim != enc_dim:
-            raise ValueError(
-                f"检索维度不一致: encoder={enc_dim}, index={self.retriever.dim}. "
-                "请重建索引或切换与之匹配的模型。"
-            )
-            
+
+        self._retrievers: Dict[str, Optional[FAISSRetriever]] = {
+            "coco": None,
+            "personal": None,
+        }
+
+        coco_ip, coco_mp = ret_cfg["index_path"], ret_cfg["metadata_path"]
+        if os.path.isfile(coco_ip) and os.path.isfile(coco_mp):
+            r = FAISSRetriever()
+            r.load(coco_ip, coco_mp)
+            if r.dim is not None and r.dim != enc_dim:
+                raise ValueError(
+                    f"COCO 索引维度与当前 CLIP 不一致: encoder={enc_dim}, index={r.dim}. "
+                    "请用同一模型重建 build_index.py。"
+                )
+            self._retrievers["coco"] = r
+
+        pers_ip = pl.get("index_path", "data/personal_faiss.index")
+        pers_mp = pl.get("metadata_path", "data/personal_metadata.json")
+        if os.path.isfile(pers_ip) and os.path.isfile(pers_mp):
+            r = FAISSRetriever()
+            r.load(pers_ip, pers_mp)
+            if r.dim is not None and r.dim != enc_dim:
+                raise ValueError(
+                    f"个人图库索引维度与当前 CLIP 不一致: encoder={enc_dim}, index={r.dim}. "
+                    "请用同一模型重建 build_personal_index.py。"
+                )
+            self._retrievers["personal"] = r
+
         self.generator = Qwen2VLGenerator(
             model_name=gen_cfg["model_name"],
             device=gen_cfg["device"],
@@ -200,6 +212,7 @@ class MultimodalRAGPipeline:
             max_new_tokens=gen_cfg["max_new_tokens"],
             temperature=gen_cfg["temperature"],
             top_p=gen_cfg.get("top_p", 0.9),
+            max_image_long_side=int(gen_cfg.get("max_image_long_side", 768)),
         )
         self.top_k = ret_cfg["top_k"]
         self.candidate_k = int(ret_cfg.get("candidate_k", max(self.top_k, 10)))
@@ -210,6 +223,20 @@ class MultimodalRAGPipeline:
         self.min_retrieval_score = ret_cfg.get("min_score", None)
         if self.min_retrieval_score is not None:
             self.min_retrieval_score = float(self.min_retrieval_score)
+
+    def _retriever(self, library: str) -> FAISSRetriever:
+        key = (library or "coco").strip().lower()
+        if key not in self._retrievers:
+            key = "coco"
+        r = self._retrievers.get(key)
+        if r is None:
+            if key == "personal":
+                raise RuntimeError(
+                    "个人图库索引未就绪：请将照片放入 data/personal_images/ 后运行 "
+                    "python build_personal_index.py"
+                )
+            raise RuntimeError("COCO 演示索引未就绪：请先运行 python build_index.py")
+        return r
 
     def _merge_candidates(self, result_groups: List[List[Dict]], limit: int) -> List[Dict]:
         return merge_candidates(result_groups, limit)
@@ -237,18 +264,21 @@ class MultimodalRAGPipeline:
         text: str,
         top_k: Optional[int] = None,
         max_images: Optional[int] = None,
+        library: str = "coco",
     ) -> Tuple[str, List[Dict]]:
         """
         文本问答主入口。
+        library: coco | personal
         返回: (answer, retrieved_items)
         """
+        retriever = self._retriever(library)
         effective_top_k = top_k if top_k is not None else self.top_k
         effective_max_images = max_images if max_images is not None else effective_top_k
         query_vec = self.encoder.encode_text(text)
         pool_k = max(effective_top_k, self.candidate_k)
         rewrite_text = None
         rewrite_vec = None
-        result_groups = [self.retriever.search(query_vec, top_k=pool_k)]
+        result_groups = [retriever.search(query_vec, top_k=pool_k)]
         if self.query_rewrite:
             rewrite_text = self.generator.rewrite_query_for_retrieval(
                 text,
@@ -256,7 +286,7 @@ class MultimodalRAGPipeline:
             )
             if rewrite_text and rewrite_text.strip().lower() != text.strip().lower():
                 rewrite_vec = self.encoder.encode_text(rewrite_text)
-                result_groups.append(self.retriever.search(rewrite_vec, top_k=pool_k))
+                result_groups.append(retriever.search(rewrite_vec, top_k=pool_k))
 
         merged = self._merge_candidates(result_groups, limit=pool_k)
         caption_query_vec = rewrite_vec if rewrite_vec is not None else query_vec
@@ -275,15 +305,17 @@ class MultimodalRAGPipeline:
         question: str = "请描述这张图像的内容。",
         top_k: Optional[int] = None,
         max_images: Optional[int] = None,
+        library: str = "coco",
     ) -> Tuple[str, List[Dict]]:
         """
         以图搜图 + 问答：先用图像检索相似图，再用 LLM 回答。
         """
+        retriever = self._retriever(library)
         effective_top_k = top_k if top_k is not None else self.top_k
         effective_max_images = max_images if max_images is not None else effective_top_k
         query_vec = self.encoder.encode_image_single(image)
         pool_k = max(effective_top_k, self.candidate_k)
-        raw = self.retriever.search(query_vec, top_k=pool_k)
+        raw = retriever.search(query_vec, top_k=pool_k)
         caption_query_vec = None
         if question.strip() and self.query_rewrite:
             rewrite_question = self.generator.rewrite_query_for_retrieval(

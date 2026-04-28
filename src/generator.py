@@ -28,11 +28,13 @@ class Qwen2VLGenerator:
         max_new_tokens: int = 384,
         temperature: float = 0.35,
         top_p: float = 0.9,
+        max_image_long_side: int = 768,
     ):
         self.device = device if torch.cuda.is_available() else "cpu"
         self.max_new_tokens = max_new_tokens
         self.temperature = temperature
         self.top_p = top_p
+        self.max_image_long_side = max(0, int(max_image_long_side))
         self._rewrite_cache: Dict[str, str] = {}
 
         print(f"[Generator] 加载 Qwen2-VL: {model_name}  4bit={load_in_4bit}")
@@ -55,6 +57,24 @@ class Qwen2VLGenerator:
         self.processor = AutoProcessor.from_pretrained(model_name)
         self.model.eval()
         print("[Generator] 模型加载完成")
+
+    @staticmethod
+    def _resize_for_vlm(img: Image.Image, max_long_side: int) -> Image.Image:
+        """缩小过长边，降低 Qwen2-VL 视觉 token 数量，避免多图 + 大图时显存爆炸。"""
+        if max_long_side <= 0:
+            return img
+        w, h = img.size
+        longest = max(w, h)
+        if longest <= max_long_side:
+            return img
+        scale = max_long_side / longest
+        nw = max(1, int(round(w * scale)))
+        nh = max(1, int(round(h * scale)))
+        try:
+            resample = Image.Resampling.LANCZOS
+        except AttributeError:
+            resample = Image.LANCZOS
+        return img.resize((nw, nh), resample)
 
     def _generate_from_messages(
         self,
@@ -153,6 +173,7 @@ class Qwen2VLGenerator:
             img_path = item.get("image_path", "")
             try:
                 img = Image.open(img_path).convert("RGB")
+                img = self._resize_for_vlm(img, self.max_image_long_side)
                 images.append(img)
                 valid_items.append(item)
             except Exception:

@@ -10,14 +10,14 @@ Gradio 演示界面：多模态 RAG 图像问答系统
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 import gradio as gr
 import yaml
 from PIL import Image
 
-# 延迟加载 pipeline（按图库分实例），避免启动时重复加载
-_pipelines: Dict[str, object] = {}
+# 全局单例：CLIP + Qwen2-VL 只加载一次；按请求切换 FAISS 图库，避免显存翻倍。
+_pipeline: Optional[object] = None
 
 
 def _normalize_library(library: Optional[str]) -> str:
@@ -25,15 +25,14 @@ def _normalize_library(library: Optional[str]) -> str:
     return key if key in ("coco", "personal") else "coco"
 
 
-def get_pipeline(library: Optional[str] = None):
-    """library: coco（COCO 演示库） | personal（本地个人图库，独立索引）"""
-    key = _normalize_library(library)
-    global _pipelines
-    if key not in _pipelines:
+def get_pipeline():
+    """返回共享的 MultimodalRAGPipeline（编码器与生成器单例）。"""
+    global _pipeline
+    if _pipeline is None:
         from src.pipeline import MultimodalRAGPipeline
 
-        _pipelines[key] = MultimodalRAGPipeline(config_path="config.yaml", library=key)
-    return _pipelines[key]
+        _pipeline = MultimodalRAGPipeline(config_path="config.yaml")
+    return _pipeline
 
 
 def check_index_ready(library: Optional[str] = None) -> bool:
@@ -61,11 +60,12 @@ def _run_text_query(query: str, top_k: int, library: str):
             msg = "请先运行 `python build_index.py` 构建 COCO 演示索引！"
         return msg, [], ""
 
-    pipeline = get_pipeline(lib)
+    pipeline = get_pipeline()
     answer, retrieved = pipeline.query_by_text(
         query.strip(),
         top_k=top_k,
         max_images=top_k,
+        library=lib,
     )
 
     images_out = []
@@ -112,12 +112,13 @@ def image_query_fn(image: Optional[Image.Image], question: str, top_k: int, libr
     if not question.strip():
         question = "请描述图像中的主要内容。"
 
-    pipeline = get_pipeline(lib)
+    pipeline = get_pipeline()
     answer, retrieved = pipeline.query_by_image(
         image,
         question,
         top_k=top_k,
         max_images=top_k,
+        library=lib,
     )
 
     images_out = []
@@ -262,7 +263,7 @@ with gr.Blocks(
 
 # 多模态 RAG 图像问答
 
-<p class="mm-sub">CLIP 向量检索 · Qwen2-VL 多模态理解 — 文本搜图或以图搜图，回答均基于离线图库检索结果。</p>
+<p class="mm-sub">CLIP 向量检索 · Qwen2-VL 多模态理解 — 文本或语音（ASR 转写后同链路）搜图 / 以图搜图，回答均基于离线图库检索结果。</p>
 
 <div class="mm-badges">
 <span class="mm-badge">CLIP</span>
